@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="./motion-favi.png" type="image/png" />
+  <title>Motion Friction</title>
+  <style>
+    :root {
+      --bg: #f6f3ef;
+      --fg: #1f1f1f;
+      --accent: #d97706;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: "Georgia", "Times New Roman", serif;
+      overflow-x: hidden;
+      overflow-y: scroll;
+    }
+    .bg {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      background: #000;
+    }
+    .bg img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .wrap {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 1;
+    }
+    .ui {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 2;
+    }
+    .ui-left {
+      position: absolute;
+      left: 24px;
+      bottom: 24px;
+      pointer-events: none;
+    }
+    .ui-right {
+      position: absolute;
+      right: 24px;
+      bottom: 24px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      pointer-events: auto;
+    }
+    .controls {
+      pointer-events: auto;
+      margin-top: 1rem;
+    }
+    .start-btn,
+    .track-select,
+    .icon-btn {
+      appearance: none;
+      border: 1px solid #c6b8a5;
+      background: #fff8ef;
+      color: #1f1f1f;
+      padding: 0.6rem 1.1rem;
+      font-size: 1rem;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: transform 120ms ease, box-shadow 120ms ease;
+    }
+    .start-btn:active,
+    .track-select:active,
+    .icon-btn:active {
+      transform: translateY(1px);
+      box-shadow: none;
+    }
+    .track-select {
+      padding: 0.55rem 1rem;
+    }
+    .icon-btn {
+      width: 44px;
+      height: 44px;
+      display: grid;
+      place-items: center;
+      font-size: 1.1rem;
+      line-height: 1;
+      padding: 0;
+    }
+    .icon-btn.is-original {
+      border-color: #15803d;
+      background: #dcfce7;
+      color: #15803d;
+    }
+    .icon {
+      display: inline-block;
+      transform: translateX(1px);
+    }
+    h1 {
+      font-size: clamp(2rem, 5vw, 4rem);
+      margin: 0 0 0.5rem 0;
+      letter-spacing: 0.02em;
+    }
+    p {
+      margin: 0.25rem 0;
+      font-size: clamp(1rem, 2vw, 1.25rem);
+    }
+    .meter {
+      font-variant-numeric: tabular-nums;
+      font-size: 0.95rem;
+      color: #1f1f1f;
+      background: rgba(255, 248, 239, 0.85);
+      border: 1px solid #c6b8a5;
+      border-radius: 999px;
+      padding: 0.45rem 0.85rem;
+    }
+    .scroll-space {
+      height: 30000px;
+      background: linear-gradient(180deg, transparent, rgba(0,0,0,0.06), transparent);
+    }
+    .hint {
+      color: #5a5a5a;
+    }
+    .accent {
+      color: var(--accent);
+    }
+  </style>
+</head>
+<body>
+  <div class="bg">
+    <img id="bg-frame" alt="Background video frame" />
+  </div>
+  <div class="wrap"></div>
+  <div class="ui">
+    <div class="ui-left">
+      <div class="meter">
+        Speed: <span id="speed">0.00</span> px/ms
+      </div>
+    </div>
+    <div class="ui-right">
+      <button class="icon-btn" id="toggle-audio" aria-label="Play or pause">
+        <span class="icon" id="play-icon">▶</span>
+      </button>
+      <select class="track-select" id="track-select" aria-label="Select track"></select>
+    </div>
+  </div>
+  <div class="scroll-space"></div>
+
+  <script>
+    const FRAME_DIR = "./video";
+    const FRAME_PREFIX = "frame_";
+    const FRAME_EXT = "png";
+    const FRAME_PAD = 6;
+    const TOTAL_FRAMES = 750; // update to match the number of files in /video
+
+    const frameEl = document.getElementById("bg-frame");
+    const scrollSpace = document.querySelector(".scroll-space");
+    const toggleBtn = document.getElementById("toggle-audio");
+    const trackSelect = document.getElementById("track-select");
+    const speedEl = document.getElementById("speed");
+    const playIcon = document.getElementById("play-icon");
+
+    const TRACK_DIR = "./tracks";
+    const TRACKS = [
+      { label: "Track 1", file: "track1.mp3" },
+      { label: "Track 2", file: "track2.mp3" }
+    ];
+
+    let lastY = window.scrollY;
+    let lastT = performance.now();
+    let lastScrollTime = lastT;
+    let smoothedSpeed = 0;
+    let direction = 1;
+    let frameHead = 0;
+    let totalScroll = 0;
+    let currentFrame = -1;
+    let lastGoodSrc = "";
+    let currentTrack = TRACKS[0].file;
+    let lastAudioUrl = "";
+
+    const MIN_RATE = 0.5;
+    const MAX_RATE = 5.0;
+    const SPEED_FOR_MAX = 8.0; // px/ms needed to hit MAX_RATE (less reactive)
+    const TARGET_RATE = 1.0;
+    const SNAP_RANGE = 0.18; // snap window around 1.0x
+    const SNAP_STRENGTH = 0.45; // 0..1 blend toward target
+    const STOP_DELAY_MS = 200;
+    const PIXELS_PER_FRAME = 40; // larger = more scroll required per frame
+
+    let ctx = null;
+    let buffer = null;
+    let reverseBuffer = null;
+    let source = null;
+    let gain = null;
+    let unlocked = false;
+    let playhead = 0;
+    let lastTick = performance.now();
+    let targetRate = MIN_RATE;
+    let playMode = "scroll"; // "scroll" or "original"
+
+    function clamp(n, min, max) {
+      return Math.max(min, Math.min(max, n));
+    }
+
+    function mapSpeedToRate(speed) {
+      // speed is px/ms; map 0..SPEED_FOR_MAX to MIN..MAX
+      const normalized = clamp(speed / SPEED_FOR_MAX, 0, 1);
+      return MIN_RATE + normalized * (MAX_RATE - MIN_RATE);
+    }
+
+    function frameSrc(index) {
+      const clamped = clamp(index, 0, TOTAL_FRAMES - 1);
+      const padded = String(clamped + 1).padStart(FRAME_PAD, "0");
+      return `${FRAME_DIR}/${FRAME_PREFIX}${padded}.${FRAME_EXT}`;
+    }
+
+    function setFrame(index) {
+      const clamped = clamp(index, 0, TOTAL_FRAMES - 1);
+      if (clamped === currentFrame) return;
+      const src = frameSrc(clamped);
+      frameEl.src = src;
+      currentFrame = clamped;
+    }
+
+    function trackUrl(file) {
+      return `${TRACK_DIR}/${file}`;
+    }
+
+    function ensureContext() {
+      if (!ctx) {
+        ctx = new (window.AudioContext || window.webkitAudioContext)();
+        gain = ctx.createGain();
+        gain.gain.value = 1;
+        gain.connect(ctx.destination);
+      }
+      if (ctx.state === "suspended") {
+        ctx.resume();
+      }
+    }
+
+    function createReversedBuffer(src) {
+      const rev = ctx.createBuffer(src.numberOfChannels, src.length, src.sampleRate);
+      for (let ch = 0; ch < src.numberOfChannels; ch++) {
+        const srcData = src.getChannelData(ch);
+        const revData = rev.getChannelData(ch);
+        for (let i = 0, j = srcData.length - 1; i < srcData.length; i++, j--) {
+          revData[i] = srcData[j];
+        }
+      }
+      return rev;
+    }
+
+    async function loadAudio() {
+      const url = trackUrl(currentTrack);
+      if (buffer && lastAudioUrl === url) return;
+      lastAudioUrl = url;
+      const res = await fetch(url);
+      const arr = await res.arrayBuffer();
+      buffer = await ctx.decodeAudioData(arr);
+      reverseBuffer = createReversedBuffer(buffer);
+    }
+
+    function startSource() {
+      if (!buffer || !reverseBuffer) return;
+      if (source) {
+        source.stop();
+        source.disconnect();
+      }
+      source = ctx.createBufferSource();
+      source.buffer = direction === 1 ? buffer : reverseBuffer;
+      source.loop = true;
+      source.playbackRate.value = Math.max(targetRate, 0.01);
+      source.connect(gain);
+      const dur = buffer.duration;
+      const mod = ((playhead % dur) + dur) % dur;
+      const offset = direction === 1 ? mod : (dur - mod);
+      source.start(0, offset);
+    }
+
+    function stopSource() {
+      if (source) {
+        source.stop();
+        source.disconnect();
+        source = null;
+      }
+    }
+
+    async function unlockAudio() {
+      if (unlocked) return;
+      unlocked = true;
+      ensureContext();
+      await loadAudio();
+    }
+
+    function processDelta(deltaY, now, y, maxScroll) {
+      if (deltaY === 0) return;
+      const dt = Math.max(now - lastT, 1);
+      const speed = Math.abs(deltaY) / dt; // px/ms
+
+      // Exponential smoothing to reduce jitter
+      smoothedSpeed = smoothedSpeed * 0.96 + speed * 0.04;
+
+      direction = deltaY > 0 ? 1 : -1;
+
+      let rate = mapSpeedToRate(smoothedSpeed);
+      if (Math.abs(rate - TARGET_RATE) < SNAP_RANGE) {
+        rate = rate * (1 - SNAP_STRENGTH) + TARGET_RATE * SNAP_STRENGTH;
+      }
+      if (playMode === "scroll") {
+        targetRate = rate;
+      }
+
+      speedEl.textContent = smoothedSpeed.toFixed(2);
+
+      if (!unlocked) {
+        unlockAudio().then(() => {
+          if (!source) startSource();
+        });
+      } else if (buffer && !source) {
+        startSource();
+      }
+
+      // Advance frames only on input (scrub by distance scrolled)
+      const span = TOTAL_FRAMES * PIXELS_PER_FRAME;
+      totalScroll = (totalScroll + deltaY) % span;
+      if (totalScroll < 0) totalScroll += span;
+      frameHead = totalScroll / PIXELS_PER_FRAME;
+      setFrame(Math.round(frameHead));
+
+
+      lastT = now;
+      lastScrollTime = now;
+    }
+
+    window.addEventListener("scroll", () => {
+      const now = performance.now();
+      const y = window.scrollY;
+      const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
+      const deltaY = y - lastY;
+      processDelta(deltaY, now, y, maxScroll);
+      lastY = y;
+    }, { passive: true });
+
+    window.addEventListener("wheel", (e) => {
+      const now = performance.now();
+      const y = window.scrollY;
+      const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
+      if (e.deltaY !== 0) {
+        processDelta(e.deltaY, now, y, maxScroll);
+      }
+    }, { passive: true });
+
+    toggleBtn.addEventListener("click", async () => {
+      if (!unlocked) {
+        await unlockAudio();
+      }
+
+      if (playMode === "scroll") {
+        playMode = "original";
+        direction = 1;
+        targetRate = 1.0;
+        if (!source) startSource();
+        if (source) {
+          source.playbackRate.setValueAtTime(1.0, ctx.currentTime);
+        }
+        toggleBtn.classList.add("is-original");
+        playIcon.textContent = "❚❚";
+      } else {
+        playMode = "scroll";
+        toggleBtn.classList.remove("is-original");
+        stopSource();
+        playIcon.textContent = "▶";
+      }
+    });
+    window.addEventListener("pointerdown", unlockAudio, { passive: true });
+    window.addEventListener("touchstart", unlockAudio, { passive: true });
+    window.addEventListener("wheel", unlockAudio, { passive: true });
+    window.addEventListener("keydown", unlockAudio, { passive: true });
+
+    function tick() {
+      const now = performance.now();
+      const dt = (now - lastTick) / 1000;
+      lastTick = now;
+
+      if (unlocked && buffer) {
+        if (playMode === "original") {
+          if (!source) startSource();
+          if (source) {
+            source.playbackRate.setValueAtTime(1.0, ctx.currentTime);
+          }
+          playhead += dt;
+          requestAnimationFrame(tick);
+          return;
+        }
+
+        if (now - lastScrollTime > STOP_DELAY_MS) {
+          stopSource();
+          speedEl.textContent = "0.00";
+          targetRate = MIN_RATE;
+          requestAnimationFrame(tick);
+          return;
+        }
+
+        const desiredBuffer = direction === 1 ? buffer : reverseBuffer;
+        const dirChanged = source && source.buffer !== desiredBuffer;
+        if (!source || dirChanged) {
+          startSource();
+        }
+        if (source) {
+          source.playbackRate.setValueAtTime(Math.max(targetRate, 0.01), ctx.currentTime);
+        }
+        if (buffer) {
+          playhead += direction * targetRate * dt;
+        }
+      }
+
+      requestAnimationFrame(tick);
+    }
+
+    function setScrollSpaceHeight() {
+      const height = window.innerHeight + TOTAL_FRAMES * PIXELS_PER_FRAME;
+      scrollSpace.style.height = `${Math.max(height, window.innerHeight * 2)}px`;
+      document.body.style.minHeight = scrollSpace.style.height;
+    }
+
+    window.addEventListener("resize", setScrollSpaceHeight);
+    setScrollSpaceHeight();
+    frameEl.addEventListener("load", () => {
+      lastGoodSrc = frameEl.src;
+    });
+    frameEl.addEventListener("error", () => {
+      if (lastGoodSrc) frameEl.src = lastGoodSrc;
+    });
+    setFrame(0);
+    tick();
+
+    TRACKS.forEach((track) => {
+      const option = document.createElement("option");
+      option.value = track.file;
+      option.textContent = track.label;
+      trackSelect.appendChild(option);
+    });
+    trackSelect.value = currentTrack;
+    trackSelect.addEventListener("change", async () => {
+      currentTrack = trackSelect.value;
+      buffer = null;
+      reverseBuffer = null;
+      stopSource();
+      if (!unlocked) return;
+      ensureContext();
+      await loadAudio();
+      startSource();
+    });
+  </script>
+</body>
+</html>
