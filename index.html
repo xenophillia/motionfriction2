@@ -59,16 +59,16 @@
     .audio-gradient {
       position: fixed;
       top: 0;
-      right: 0;
+      left: 0;
       height: 100%;
       width: var(--audio-grad-width, 0%);
-      background: linear-gradient(270deg, var(--audio-grad-color, transparent) 0%, rgba(0, 0, 0, 0) 100%);
+      background: linear-gradient(90deg, var(--audio-grad-color, transparent) 0%, rgba(0, 0, 0, 0) 100%);
       pointer-events: none;
       z-index: 1;
       opacity: 0;
       transition: width 40ms linear;
     }
-    body.is-audio .audio-gradient {
+    body.has-gradient .audio-gradient {
       opacity: 1;
     }
     .wrap {
@@ -102,6 +102,42 @@
       gap: 10px;
       align-items: center;
       pointer-events: none;
+    }
+    .speed-toggle {
+      position: fixed;
+      top: 18px;
+      right: 18px;
+      width: 140px;
+      height: 24px;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 4;
+      pointer-events: auto;
+    }
+    body.show-speed-toggle .speed-toggle {
+      display: flex;
+    }
+    .speed-track {
+      position: relative;
+      width: 100%;
+      height: 2px;
+      background: rgba(246, 243, 239, 0.8);
+    }
+    .speed-thumb {
+      position: absolute;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: #f6f3ef;
+    }
+    .speed-range {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
     }
     .controls {
       pointer-events: auto;
@@ -231,6 +267,12 @@
   <div class="scroll-space"></div>
   <div class="tiny-title">this spectacle is under construction</div>
   <div class="distance-counter" id="distance-counter">i sat through 0px, 0in and 0m</div>
+  <div class="speed-toggle" id="speed-toggle" aria-hidden="true">
+    <div class="speed-track">
+      <div class="speed-thumb" id="speed-thumb"></div>
+    </div>
+    <input class="speed-range" id="speed-range" type="range" min="0.1" max="1.5" step="0.05" value="0.6" />
+  </div>
 
   <script>
     const FRAME_PREFIX = "frame_";
@@ -249,6 +291,9 @@
     const speedEl = document.getElementById("speed");
     const modeLabel = document.getElementById("mode-label");
     const distanceEl = document.getElementById("distance-counter");
+    const speedToggle = document.getElementById("speed-toggle");
+    const speedRange = document.getElementById("speed-range");
+    const speedThumb = document.getElementById("speed-thumb");
     const startScreen = document.getElementById("start-screen");
     const startPanel = document.getElementById("start-panel");
 
@@ -317,13 +362,14 @@
     let nextTrackColor = "transparent";
     let audioGradProgress = 0;
     let totalDistancePx = 0;
+    let speedMultiplier = 0.6;
 
     const IN_PER_PX = 1 / 96;
     const M_PER_IN = 0.0254;
 
     const MIN_RATE = 0.5;
     const MAX_RATE = 5.0;
-    const SPEED_FOR_MAX = 8.0; // px/ms needed to hit MAX_RATE (less reactive)
+    const SPEED_FOR_MAX = 12.0; // px/ms needed to hit MAX_RATE (less reactive)
     const TARGET_RATE = 1.0;
     const VIDEO_BASE_FPS = 12;
     const ESC_GUARD_MS = 300;
@@ -401,6 +447,14 @@
       if (distanceEl) {
         distanceEl.textContent = `i sat through ${Math.round(totalDistancePx)}px, ${Math.round(inches)}in and ${Math.round(meters)}m`;
       }
+    }
+
+    function updateSpeedUi() {
+      if (!speedThumb || !speedRange) return;
+      const min = parseFloat(speedRange.min);
+      const max = parseFloat(speedRange.max);
+      const pct = (speedMultiplier - min) / (max - min);
+      speedThumb.style.left = `${Math.max(0, Math.min(pct, 1)) * 100}%`;
     }
 
     function ensureContext() {
@@ -509,19 +563,20 @@
     }
 
     function processDelta(deltaY, now, y, maxScroll) {
+      const scaledDelta = deltaY * speedMultiplier;
       if (deltaY !== 0) {
         totalDistancePx += Math.abs(deltaY);
         updateDistanceCounter();
       }
       if (!isActive) return;
-      if (deltaY === 0) return;
+      if (scaledDelta === 0) return;
       const dt = Math.max(now - lastT, 1);
-      const speed = Math.abs(deltaY) / dt; // px/ms
+      const speed = Math.abs(scaledDelta) / dt; // px/ms
 
       // Exponential smoothing to reduce jitter
       smoothedSpeed = smoothedSpeed * 0.96 + speed * 0.04;
 
-      direction = deltaY > 0 ? 1 : -1;
+      direction = scaledDelta > 0 ? 1 : -1;
 
       let rate = mapSpeedToRate(smoothedSpeed);
       if (Math.abs(rate - TARGET_RATE) < SNAP_RANGE) {
@@ -546,11 +601,11 @@
 
       // Advance frames only on input (scrub by distance scrolled)
       const span = displayFrames * PIXELS_PER_FRAME;
-      totalScroll = (totalScroll + deltaY) % span;
+      totalScroll = (totalScroll + scaledDelta) % span;
       if (totalScroll < 0) totalScroll += span;
       frameHead = totalScroll / PIXELS_PER_FRAME;
       setFrame(Math.round(frameHead));
-      if (activeMode === "track") {
+      if (document.body.classList.contains("has-gradient")) {
         const progress = span > 0 ? totalScroll / span : 0;
         setAudioGradient(nextTrackColor, progress);
       }
@@ -630,7 +685,7 @@
           stopSource();
           speedEl.textContent = "0.00";
           targetRate = MIN_RATE;
-          if (activeMode === "track" && audioGradProgress > 0) {
+          if (document.body.classList.contains("has-gradient") && audioGradProgress > 0) {
             setAudioGradient(nextTrackColor, audioGradProgress * 0.92);
           }
           requestAnimationFrame(tick);
@@ -709,11 +764,19 @@
         totalFrames = item.source.frames;
         displayFrames = Math.ceil(totalFrames / 2);
         setBgColor("#0b0905");
-        nextTrackColor = "transparent";
-        setAudioGradient("transparent", 0);
+        if (item.id === "bw-dancer") {
+          document.body.classList.add("has-gradient");
+          nextTrackColor = TRACK_COLORS[TRACKS[0].label];
+          setAudioGradient(nextTrackColor, 0);
+        } else {
+          document.body.classList.remove("has-gradient");
+          nextTrackColor = "transparent";
+          setAudioGradient("transparent", 0);
+        }
       } else {
         document.body.classList.add("is-audio");
         document.body.classList.remove("is-video");
+        document.body.classList.add("has-gradient");
         document.body.classList.remove("video-left");
         document.body.classList.remove("video-right");
         currentVideoDir = VIDEO_SOURCES.default.dir;
@@ -723,8 +786,13 @@
         modeLabel.textContent = item.label.toLowerCase();
         setBgColor(item.color);
         const idx = TRACKS.findIndex((track) => track.file === item.file);
-        const nextIdx = idx >= 0 ? (idx + 1) % TRACKS.length : 0;
-        nextTrackColor = TRACK_COLORS[TRACKS[nextIdx].label];
+        if (idx >= 0 && idx < TRACKS.length - 1) {
+          nextTrackColor = TRACK_COLORS[TRACKS[idx + 1].label];
+        } else if (idx === TRACKS.length - 1) {
+          nextTrackColor = "#0b0905";
+        } else {
+          nextTrackColor = TRACK_COLORS[TRACKS[0].label];
+        }
         setAudioGradient(nextTrackColor, 0);
       }
 
@@ -746,6 +814,7 @@
       document.body.classList.remove("is-active");
       document.body.classList.remove("is-audio");
       document.body.classList.remove("is-video");
+      document.body.classList.remove("has-gradient");
       document.body.classList.remove("video-left");
       document.body.classList.remove("video-right");
       document.body.style.overflowY = "hidden";
@@ -814,6 +883,13 @@
     }, { passive: false });
 
     window.addEventListener("keydown", (e) => {
+      if (e.key.toLowerCase() === "v") {
+        document.body.classList.toggle("show-speed-toggle");
+        if (speedToggle) {
+          speedToggle.setAttribute("aria-hidden", document.body.classList.contains("show-speed-toggle") ? "false" : "true");
+        }
+        return;
+      }
       if (e.key.toLowerCase() === "x") {
         resetToMenu();
         return;
@@ -842,6 +918,14 @@
     window.addEventListener("touchmove", playClick, { passive: true });
     window.addEventListener("pointerdown", playClick, { passive: true });
     window.addEventListener("touchstart", playClick, { passive: true });
+
+    if (speedRange) {
+      speedRange.addEventListener("input", () => {
+        speedMultiplier = parseFloat(speedRange.value);
+        updateSpeedUi();
+      });
+      updateSpeedUi();
+    }
   </script>
 </body>
 </html>
