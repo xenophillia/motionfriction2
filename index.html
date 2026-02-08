@@ -27,14 +27,23 @@
       inset: 0;
       z-index: 0;
       background: var(--bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
     .bg img {
-      width: 100%;
       height: 100%;
-      object-fit: cover;
+      width: auto;
+      object-fit: contain;
       display: block;
       opacity: 0;
       transition: opacity 240ms ease;
+    }
+    body.video-left .bg {
+      justify-content: flex-start;
+    }
+    body.video-right .bg {
+      justify-content: flex-end;
     }
     body.is-active .bg img {
       opacity: 1;
@@ -171,7 +180,7 @@
       top: 18px;
       transform: translateX(-50%);
       font-family: "Helvetica Neue", "Arial", sans-serif;
-      font-size: clamp(0.325rem, 0.9vw, 0.525rem);
+      font-size: clamp(0.65rem, 1.8vw, 1.05rem);
       letter-spacing: 0.02em;
       color: #f6f3ef;
       z-index: 4;
@@ -184,7 +193,7 @@
       bottom: 18px;
       transform: translateX(-50%);
       font-family: "Helvetica Neue", "Arial", sans-serif;
-      font-size: clamp(0.325rem, 0.9vw, 0.525rem);
+      font-size: clamp(0.65rem, 1.8vw, 1.05rem);
       letter-spacing: 0.02em;
       color: #f6f3ef;
       z-index: 4;
@@ -220,7 +229,7 @@
 
   <script>
     const FRAME_PREFIX = "frame_";
-    const FRAME_EXT = "png";
+    const FRAME_EXT = "jpg";
     const FRAME_PAD = 6;
     const VIDEO_SOURCES = {
       default: { dir: "./video", frames: 750 },
@@ -273,14 +282,14 @@
         label: "bw dancer",
         type: "video",
         source: VIDEO_SOURCES.bw,
-        preview: "./video-1/frame_000001.png"
+        preview: "./video-1/frame_000001.jpg"
       },
       {
         id: "full-color-dancer",
         label: "full color dancer",
         type: "video",
         source: VIDEO_SOURCES.color,
-        preview: "./video-2/frame_000001.png"
+        preview: "./video-2/frame_000001.jpg"
       }
     ];
 
@@ -297,6 +306,7 @@
     let lastAudioUrl = "";
     let currentVideoDir = VIDEO_SOURCES.default.dir;
     let totalFrames = VIDEO_SOURCES.default.frames;
+    let displayFrames = VIDEO_SOURCES.default.frames;
     let isActive = false;
     let activeMode = "none"; // "track" or "video"
     let nextTrackColor = "transparent";
@@ -311,6 +321,7 @@
     const SPEED_FOR_MAX = 8.0; // px/ms needed to hit MAX_RATE (less reactive)
     const TARGET_RATE = 1.0;
     const VIDEO_BASE_FPS = 12;
+    const ESC_GUARD_MS = 300;
     const SNAP_RANGE = 0.18; // snap window around 1.0x
     const SNAP_STRENGTH = 0.45; // 0..1 blend toward target
     const STOP_DELAY_MS = 200;
@@ -344,13 +355,14 @@
     }
 
     function frameSrc(index) {
-      const clamped = clamp(index, 0, totalFrames - 1);
-      const padded = String(clamped + 1).padStart(FRAME_PAD, "0");
+      const clamped = clamp(index, 0, displayFrames - 1);
+      const mapped = activeMode === "video" ? (clamped * 2) % totalFrames : clamped;
+      const padded = String(mapped + 1).padStart(FRAME_PAD, "0");
       return `${currentVideoDir}/${FRAME_PREFIX}${padded}.${FRAME_EXT}`;
     }
 
     function setFrame(index) {
-      const clamped = clamp(index, 0, totalFrames - 1);
+      const clamped = clamp(index, 0, displayFrames - 1);
       if (clamped === currentFrame) return;
       const src = frameSrc(clamped);
       frameEl.src = src;
@@ -528,7 +540,7 @@
       }
 
       // Advance frames only on input (scrub by distance scrolled)
-      const span = totalFrames * PIXELS_PER_FRAME;
+      const span = displayFrames * PIXELS_PER_FRAME;
       totalScroll = (totalScroll + deltaY) % span;
       if (totalScroll < 0) totalScroll += span;
       frameHead = totalScroll / PIXELS_PER_FRAME;
@@ -575,14 +587,22 @@
     window.addEventListener("pointerdown", unlockClickAudio, { passive: true });
     window.addEventListener("touchstart", unlockClickAudio, { passive: true });
     window.addEventListener("keydown", unlockClickAudio, { passive: true });
+    window.addEventListener("wheel", unlockClickAudio, { passive: true });
+    window.addEventListener("touchmove", unlockClickAudio, { passive: true });
+    window.addEventListener("scroll", unlockClickAudio, { passive: true });
 
     function tick() {
       const now = performance.now();
       const dt = (now - lastTick) / 1000;
       lastTick = now;
 
+      if (isActive && activeMode === "track" && playMode === "original") {
+        const next = (audioGradProgress + dt * 0.08) % 1;
+        setAudioGradient(nextTrackColor, next);
+      }
+
       if (isActive && activeMode === "video" && playMode === "original") {
-        frameHead = (frameHead + VIDEO_BASE_FPS * dt) % totalFrames;
+        frameHead = (frameHead + VIDEO_BASE_FPS * dt) % displayFrames;
         setFrame(Math.round(frameHead));
         speedEl.textContent = "1.00";
         requestAnimationFrame(tick);
@@ -629,7 +649,7 @@
     }
 
     function setScrollSpaceHeight() {
-      const height = window.innerHeight + totalFrames * PIXELS_PER_FRAME;
+      const height = window.innerHeight + displayFrames * PIXELS_PER_FRAME;
       scrollSpace.style.height = `${Math.max(height, window.innerHeight * 2)}px`;
       document.body.style.minHeight = scrollSpace.style.height;
     }
@@ -663,25 +683,37 @@
       lastT = performance.now();
       lastScrollTime = lastT;
       lastY = window.scrollY;
+      displayFrames = activeMode === "video" ? Math.ceil(totalFrames / 2) : totalFrames;
 
       activeMode = item.type;
       if (item.type === "video") {
         document.body.classList.remove("is-audio");
         document.body.classList.add("is-video");
+        if (item.id === "bw-dancer") {
+          document.body.classList.add("video-right");
+          document.body.classList.remove("video-left");
+        } else {
+          document.body.classList.add("video-left");
+          document.body.classList.remove("video-right");
+        }
         modeLabel.textContent = item.label.toLowerCase();
         stopSource();
         buffer = null;
         reverseBuffer = null;
         currentVideoDir = item.source.dir;
         totalFrames = item.source.frames;
-        setBgColor("#000");
+        displayFrames = Math.ceil(totalFrames / 2);
+        setBgColor("#0b0905");
         nextTrackColor = "transparent";
         setAudioGradient("transparent", 0);
       } else {
         document.body.classList.add("is-audio");
         document.body.classList.remove("is-video");
+        document.body.classList.remove("video-left");
+        document.body.classList.remove("video-right");
         currentVideoDir = VIDEO_SOURCES.default.dir;
         totalFrames = VIDEO_SOURCES.default.frames;
+        displayFrames = totalFrames;
         currentTrack = item.file;
         modeLabel.textContent = item.label.toLowerCase();
         setBgColor(item.color);
@@ -709,6 +741,8 @@
       document.body.classList.remove("is-active");
       document.body.classList.remove("is-audio");
       document.body.classList.remove("is-video");
+      document.body.classList.remove("video-left");
+      document.body.classList.remove("video-right");
       document.body.style.overflowY = "hidden";
       startScreen.style.display = "grid";
       setAudioUiVisible(false);
@@ -775,7 +809,7 @@
     }, { passive: false });
 
     window.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") {
+      if (e.key.toLowerCase() === "x") {
         resetToMenu();
         return;
       }
